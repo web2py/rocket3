@@ -55,7 +55,7 @@ log = logging.getLogger("Rocket")
 log.addHandler(NullHandler())
 
 # Define Constants
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 SERVER_NAME = socket.gethostname()
 SERVER_SOFTWARE = "Rocket3 %s" % __version__
 HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
@@ -472,6 +472,7 @@ class Listener(threading.Thread):
                 cert_reqs = ssl.CERT_OPTIONAL
                 sock = ssl.wrap_socket(
                     sock,
+                    do_handshake_on_connect=False,
                     keyfile=self.interface[2],
                     certfile=self.interface[3],
                     server_side=True,
@@ -482,6 +483,7 @@ class Listener(threading.Thread):
             else:
                 sock = ssl.wrap_socket(
                     sock,
+                    do_handshake_on_connect=False,
                     keyfile=self.interface[2],
                     certfile=self.interface[3],
                     server_side=True,
@@ -1520,6 +1522,7 @@ class WSGIWorker(Worker):
             environ["wsgi.url_scheme"] = "https"
             environ["HTTPS"] = "on"
             try:
+                conn.socket.do_handshake()
                 peercert = conn.socket.getpeercert(binary_form=True)
                 environ["SSL_CLIENT_RAW_CERT"] = peercert and str(
                     ssl.DER_cert_to_PEM_cert(peercert)
