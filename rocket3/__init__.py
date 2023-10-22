@@ -657,7 +657,7 @@ class Rocket3:
             self._monitor = Monitor(
                 self.monitor_queue, self.active_queue, self.timeout, self._threadpool
             )
-            self._monitor.setDaemon(True)
+            self._monitor.daemon = True
             self._monitor.start()
 
             # I know that EXPR and A or B is bad but I'm keeping it for Py2.4
@@ -991,7 +991,7 @@ class ThreadPool:
         dead_threads = [t for t in self.threads if not t.is_alive()]
         for t in dead_threads:
             if __debug__:
-                log.debug("Removing dead thread: %s." % t.getName())
+                log.debug("Removing dead thread: %s." % t.name)
             self.threads.remove(t)
         self.check_for_dead_threads -= len(dead_threads)
 
@@ -1109,7 +1109,7 @@ class Worker(threading.Thread):
         self.req_log.addHandler(NullHandler())
 
         # Error Log
-        self.err_log = logging.getLogger("Rocket.Errors." + self.getName())
+        self.err_log = logging.getLogger("Rocket.Errors." + self.name)
         self.err_log.addHandler(NullHandler())
 
     def _handleError(self, typ, val, tb):
