@@ -1013,7 +1013,7 @@ class ThreadPool:
                 self.app_info, self.active_queue, self.monitor_queue
             )
 
-            worker.setDaemon(True)
+            worker.daemon = True
             self.threads.add(worker)
             worker.start()
 
