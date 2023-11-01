@@ -55,10 +55,14 @@ log = logging.getLogger("Rocket")
 log.addHandler(NullHandler())
 
 # Define Constants
-__version__ = "20230507.1"
+#1,2,3Hiding leaked information from the HTTP Response header. Access to such information may facilitate attackers identifying other vulnerabilities.
+#1__version__ = "20230507.1"
+__version__ = ""
 SERVER_NAME = socket.gethostname()
-SERVER_SOFTWARE = "Rocket3 %s" % __version__
-HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
+#2SERVER_SOFTWARE = "Rocket3 %s" % __version__
+SERVER_SOFTWARE = ""
+#3HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
+HTTP_SERVER_SOFTWARE = ""
 BUF_SIZE = 16384
 SOCKET_TIMEOUT = 10  # in secs
 THREAD_STOP_CHECK_INTERVAL = (
