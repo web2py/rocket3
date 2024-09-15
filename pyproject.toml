@@ -1,0 +1,17 @@
+[project]
+name = "rocket3"
+version = "20240915.1"
+authors = [{ name="Massimo Di Pierro", email="massimo.dipierro@gmail.com" },]
+description = "A multi-threaded WSGI compiliant and secure web server"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/web2py/rocket3"
+"Bug Tracker" = "https://github.com/web2py/rocket3/issues"
+
