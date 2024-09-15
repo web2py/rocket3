@@ -7,30 +7,28 @@
 
 # Import System Modules
 
-import sys
-import errno
-import socket
-import signal
-import logging
-import platform
-import io
-import urllib.parse
-import time
-import logging
-import select
-import threading
-import traceback
-import queue
-import errno
+import copy
 import datetime
+import errno
+import io
+import logging
 import os
+import platform
+import queue
 import re
-
-from wsgiref.headers import Headers
-from wsgiref.util import FileWrapper
-from email.utils import formatdate
+import select
+import signal
+import socket
+import sys
+import threading
+import time
+import traceback
+import urllib.parse
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures.thread import _WorkItem
+from email.utils import formatdate
+from wsgiref.headers import Headers
+from wsgiref.util import FileWrapper
 
 try:
     import ssl
@@ -38,6 +36,20 @@ try:
     has_ssl = True
 except ImportError:
     has_ssl = False
+
+
+__all__ = [
+    "__version__",
+    "SERVER_SOFTWARE",
+    "HTTP_SERVER_SOFTWARE",
+    "BUF_SIZE",
+    "IS_JYTHON",
+    "IGNORE_ERRORS_ON_CLOSE",
+    "DEFAULTS",
+    "Rocket3",
+    "SERVER_NAME",
+    "NullHandler",
+]
 
 
 class SSLError(socket.error):
@@ -78,19 +90,6 @@ DEFAULTS = dict(
     MIN_THREADS=DEFAULT_MIN_THREADS,
     MAX_THREADS=DEFAULT_MAX_THREADS,
 )
-
-
-__all__ = [
-    "__version__" "SERVER_SOFTWARE",
-    "HTTP_SERVER_SOFTWARE",
-    "BUF_SIZE",
-    "IS_JYTHON",
-    "IGNORE_ERRORS_ON_CLOSE",
-    "DEFAULTS",
-    "Rocket3",
-    "SERVER_NAME",
-    "NullHandler",
-]
 
 
 class Connection:
@@ -390,6 +389,7 @@ class Listener(threading.Thread):
         self.addr = interface[0]
         self.port = interface[1]
         self.secure = len(interface) >= 4
+        self.context = None
         self.clientcert_req = len(interface) == 5 and interface[4]
 
         self.thread = None
@@ -466,36 +466,17 @@ class Listener(threading.Thread):
             self.ready = True
 
     def wrap_socket(self, sock):
-        try:
-            if self.clientcert_req:
-                ca_certs = self.interface[4]
-                cert_reqs = ssl.CERT_OPTIONAL
-                sock = ssl.wrap_socket(
-                    sock,
-                    do_handshake_on_connect=False,
-                    keyfile=self.interface[2],
-                    certfile=self.interface[3],
-                    server_side=True,
-                    cert_reqs=cert_reqs,
-                    ca_certs=ca_certs,
-                    ssl_version=ssl.PROTOCOL_SSLv23,
-                )
-            else:
-                sock = ssl.wrap_socket(
-                    sock,
-                    do_handshake_on_connect=False,
-                    keyfile=self.interface[2],
-                    certfile=self.interface[3],
-                    server_side=True,
-                    ssl_version=ssl.PROTOCOL_SSLv23,
-                )
-        except SSLError:
-            # Generally this happens when an HTTP request is received on a
-            # secure socket. We don't do anything because it will be detected
-            # by Worker and dealt with appropriately.
-            pass
-
-        return sock
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(
+            keyfile=self.interface[2], certfile=self.interface[3]
+        )
+        if self.clientcert_req:
+            self.context.load_verify_locations(self.interface[4])
+            self.context.verify_model = ssl.CERT_OPTIONAL
+        ssl_sock = self.context.wrap_socket(
+            sock, do_handshake_on_connect=False, server_side=True
+        )
+        return ssl_sock
 
     def start(self):
         if not self.ready:
@@ -536,7 +517,10 @@ class Listener(threading.Thread):
                 sock, addr = self.listener.accept()
 
                 if self.secure:
-                    sock = self.wrap_socket(sock)
+                    try:
+                        sock = self.wrap_socket(sock)
+                    except ssl.SSLError:
+                        continue
 
                 self.active_queue.put(((sock, addr), self.interface[1], self.secure))
 
@@ -576,7 +560,6 @@ class Rocket3:
         timeout=600,
         handle_signals=True,
     ):
-
         self.handle_signals = handle_signals
         self.startstop_lock = threading.Lock()
         self.timeout = timeout
@@ -739,7 +722,6 @@ class Monitor(threading.Thread):
     def __init__(
         self, monitor_queue, active_queue, timeout, threadpool, *args, **kwargs
     ):
-
         threading.Thread.__init__(self, *args, **kwargs)
 
         self._threadpool = threadpool
@@ -769,7 +751,6 @@ class Monitor(threading.Thread):
 
         # Enter thread main loop
         while self.active:
-
             # Move the queued connections to the selection pool
             while not self.monitor_queue.empty():
                 if __debug__:
@@ -848,7 +829,7 @@ class Monitor(threading.Thread):
                     if (now - c.start_time) >= self.timeout:
                         stale.add(c)
 
-                for c in stale:
+                for c in copy.copy(stale):
                     self.connections.remove(c)
                     list_changed = True
 
@@ -912,7 +893,6 @@ class ThreadPool:
         min_threads=DEFAULTS["MIN_THREADS"],
         max_threads=DEFAULTS["MAX_THREADS"],
     ):
-
         if __debug__:
             log.debug("Initializing ThreadPool.")
 
@@ -1044,7 +1024,6 @@ class ThreadPool:
                 self.shrink()
 
             elif queueSize > self.grow_threshold:
-
                 self.grow(queueSize)
 
 
@@ -1090,7 +1069,6 @@ class Worker(threading.Thread):
     and (a subclass) will run an application to process the the connection"""
 
     def __init__(self, app_info, active_queue, monitor_queue, *args, **kwargs):
-
         threading.Thread.__init__(self, *args, **kwargs)
 
         # Instance Variables
@@ -1210,7 +1188,6 @@ class Worker(threading.Thread):
                         conn.close()
                     except:
                         self.err_log.error(str(traceback.format_exc()))
-
                     break
 
     def run_app(self, conn):
@@ -1490,7 +1467,7 @@ class WSGIWorker(Worker):
             )
 
     def build_environ(self, sock_file, conn):
-        """ Build the execution environment. """
+        """Build the execution environment."""
         # Grab the request line
         request = self.read_request_line(sock_file)
 
@@ -1606,7 +1583,7 @@ class WSGIWorker(Worker):
         return self.write(data, sections)
 
     def write(self, data, sections=None):
-        """ Write the data to the output socket. """
+        """Write the data to the output socket."""
 
         if self.error[0]:
             self.status = self.error[0]
@@ -1645,19 +1622,16 @@ class WSGIWorker(Worker):
         elif self.header_set:
             raise AssertionError("Headers already set!")
 
-        if not isinstance(status, str):
+        if isinstance(status, bytes):
             self.status = str(status, "ISO-8859-1")
         else:
-            self.status = status
+            self.status = str(status)
         # Make sure headers are bytes objects
         try:
             self.header_set = Headers(response_headers)
-        except UnicodeDecodeError:
+        except (TypeError, UnicodeDecodeError):
             self.error = ("500 Internal Server Error", "HTTP Headers should be bytes")
-            self.err_log.error(
-                "Received HTTP Headers from client that contain"
-                " invalid characters for Latin-1 encoding."
-            )
+            self.err_log.error("Received Invalid HTTP Headers")
 
         return self.write_warning
 
@@ -1688,11 +1662,12 @@ class WSGIWorker(Worker):
             # Send it to our WSGI application
             output = self.app(environ, self.start_response)
 
-            if not hasattr(output, "__len__") and not hasattr(output, "__iter__"):
+            if not hasattr(output, "__iter__"):
                 self.error = (
                     "500 Internal Server Error",
                     "WSGI applications must return a list or " "generator type.",
                 )
+                output = self.error[0]
 
             if hasattr(output, "__len__"):
                 sections = len(output)
@@ -1710,16 +1685,20 @@ class WSGIWorker(Worker):
                 # If chunked, send our final chunk length
                 self.conn.sendall(b"0\r\n\r\n")
 
+        except ssl.SSLError as err:
+            if __debug__:
+                self.err_log.debug(f"SSLError: {err}")
+
         # Don't capture exceptions here.  The Worker class handles
         # them appropriately.
         finally:
             if __debug__:
                 self.err_log.debug("Finally closing output and sock_file")
 
-            if hasattr(output, "close"):
-                output.close()
+        if hasattr(output, "close"):
+            output.close()
 
-            sock_file.close()
+        sock_file.close()
 
 
 # Monolithic build...end of module: rocket/methods/wsgi.py
