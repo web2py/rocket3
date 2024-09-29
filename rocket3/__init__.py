@@ -37,8 +37,6 @@ try:
 except ImportError:
     has_ssl = False
 
-__vesrion__ = "20240929.1"
-
 __all__ = [
     "__version__",
     "SERVER_SOFTWARE",
@@ -68,7 +66,7 @@ log = logging.getLogger("Rocket")
 log.addHandler(NullHandler())
 
 # Define Constants
-__version__ = "20230507.1"
+__version__ = "20240929.2"
 SERVER_NAME = socket.gethostname()
 SERVER_SOFTWARE = "Rocket3 %s" % __version__
 HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
