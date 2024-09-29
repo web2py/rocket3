@@ -37,6 +37,7 @@ try:
 except ImportError:
     has_ssl = False
 
+__vesrion__ = "20240929.1"
 
 __all__ = [
     "__version__",
@@ -389,8 +390,17 @@ class Listener(threading.Thread):
         self.addr = interface[0]
         self.port = interface[1]
         self.secure = len(interface) >= 4
-        self.context = None
         self.clientcert_req = len(interface) == 5 and interface[4]
+        if not self.secure:
+            self.context = None
+        else:
+            self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self.context.load_cert_chain(
+                keyfile=self.interface[2], certfile=self.interface[3]
+            )
+            if self.clientcert_req:
+                self.context.load_verify_locations(self.interface[4])
+                self.context.verify_model = ssl.CERT_OPTIONAL
 
         self.thread = None
         self.ready = False
@@ -466,13 +476,6 @@ class Listener(threading.Thread):
             self.ready = True
 
     def wrap_socket(self, sock):
-        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self.context.load_cert_chain(
-            keyfile=self.interface[2], certfile=self.interface[3]
-        )
-        if self.clientcert_req:
-            self.context.load_verify_locations(self.interface[4])
-            self.context.verify_model = ssl.CERT_OPTIONAL
         ssl_sock = self.context.wrap_socket(
             sock, do_handshake_on_connect=False, server_side=True
         )
