@@ -1,7 +1,7 @@
 .PHONY: venv test build deploy
 venv:
 	python3 -m venv venv
-test: venv
+tests: venv
 	venv/bin/pip install -U requests
 	venv/bin/pip install -U pytest
 	venv/bin/python -m pytest

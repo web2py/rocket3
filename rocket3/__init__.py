@@ -66,7 +66,7 @@ log = logging.getLogger("Rocket")
 log.addHandler(NullHandler())
 
 # Define Constants
-__version__ = "20240929.2"
+__version__ = "20241019.1"
 SERVER_NAME = socket.gethostname()
 SERVER_SOFTWARE = "Rocket3 %s" % __version__
 HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
@@ -253,7 +253,7 @@ class FileLikeSocket:
 
         try:
             data = self.conn.recv(length)
-        except:
+        except Exception:
             data = b""
 
         return data
@@ -445,20 +445,20 @@ class Listener(threading.Thread):
         # Set socket options
         try:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except:
+        except Exception:
             msg = "Cannot share socket.  Using %s:%i exclusively."
             self.err_log.warning(msg % (self.addr, self.port))
 
         try:
             if not IS_JYTHON:
                 listener.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except:
+        except Exception:
             msg = "Cannot set TCP_NODELAY, things might run a little slower"
             self.err_log.warning(msg)
 
         try:
             listener.bind((self.addr, self.port))
-        except:
+        except Exception:
             msg = "Socket %s:%i in use by other process and it won't share."
             self.err_log.error(msg % (self.addr, self.port))
         else:
@@ -536,7 +536,7 @@ class Listener(threading.Thread):
                     return
                 else:
                     continue
-            except:
+            except Exception:
                 self.err_log.error(traceback.format_exc())
 
 
@@ -631,7 +631,7 @@ class Rocket3:
                 try:
                     signal.signal(signal.SIGTERM, self._sigterm)
                     signal.signal(signal.SIGUSR1, self._sighup)
-                except:
+                except Exception:
                     log.debug("This platform does not support signals.")
 
             # Start our worker threads
@@ -641,7 +641,6 @@ class Rocket3:
             self._monitor = Monitor(
                 self.monitor_queue, self.active_queue, self.timeout, self._threadpool
             )
-            self._monitor.daemon = True
             self._monitor.start()
 
             # I know that EXPR and A or B is bad but I'm keeping it for Py2.4
@@ -667,7 +666,7 @@ class Rocket3:
             except KeyboardInterrupt:
                 # Capture a keyboard interrupt when running from a console
                 break
-            except:
+            except Exception:
                 if self._monitor.is_alive():
                     log.error(traceback.format_exc())
                     continue
@@ -816,7 +815,7 @@ class Monitor(threading.Thread):
                     self.connections.remove(r)
                     list_changed = True
 
-            except:
+            except Exception:
                 if self.active:
                     raise
                 else:
@@ -952,12 +951,9 @@ class ThreadPool:
                 )
             self.app_info["executor"].shutdown(wait=False)
 
-        # Give them the gun
-        # active_threads = [t for t in self.threads if t.is_alive()]
-        # while active_threads:
-        #     t = active_threads.pop()
-        #     t.kill()
-
+        # code below should be fixed but it is ok as long as
+        # the program that calls stop also ends
+        """            
         # Wait until they pull the trigger
         for t in self.threads:
             if t.is_alive():
@@ -965,6 +961,7 @@ class ThreadPool:
 
         # Clean up the mess
         self.bring_out_your_dead()
+        """
 
     def bring_out_your_dead(self):
         # Remove dead threads from the pool
@@ -993,8 +990,6 @@ class ThreadPool:
             worker = self.worker_class(
                 self.app_info, self.active_queue, self.monitor_queue
             )
-
-            worker.daemon = True
             self.threads.add(worker)
             worker.start()
 
@@ -1168,7 +1163,7 @@ class Worker(threading.Thread):
                     self.err_log.debug("Serving a request")
                 try:
                     self.run_app(conn)
-                except:
+                except Exception:
                     exc = sys.exc_info()
                     handled = self._handleError(*exc)
                     if handled:
@@ -1187,7 +1182,7 @@ class Worker(threading.Thread):
                 if self.closeConnection:
                     try:
                         conn.close()
-                    except:
+                    except Exception:
                         self.err_log.error(str(traceback.format_exc()))
                     break
 
