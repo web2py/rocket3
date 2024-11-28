@@ -7,7 +7,7 @@ Rocket was originally developed by Massimo Di Pierro, then rewritten much better
 ## Example
 
 ```
-from rocket3 import Rocket
+from rocket3 import Rocket3 as Rocket
 
 def demo_app(environ, start_response):
     """simple exmaple WSGI app"""
