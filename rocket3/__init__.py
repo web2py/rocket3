@@ -66,7 +66,7 @@ log = logging.getLogger("Rocket")
 log.addHandler(NullHandler())
 
 # Define Constants
-__version__ = "20241019.1"
+__version__ = "20241201.1"
 SERVER_NAME = socket.gethostname()
 SERVER_SOFTWARE = "Rocket3 %s" % __version__
 HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
@@ -520,7 +520,7 @@ class Listener(threading.Thread):
                 if self.secure:
                     try:
                         sock = self.wrap_socket(sock)
-                    except ssl.SSLError:
+                    except Exception:
                         continue
 
                 self.active_queue.put(((sock, addr), self.interface[1], self.secure))
@@ -1684,6 +1684,9 @@ class WSGIWorker(Worker):
         except ssl.SSLError as err:
             if __debug__:
                 self.err_log.debug(f"SSLError: {err}")
+        except ssl.SSLCertVerificationError as err:
+            if __debug__:
+                self.err_log.debug(f"SSLCertVerificationError: {err}")
 
         # Don't capture exceptions here.  The Worker class handles
         # them appropriately.
