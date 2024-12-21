@@ -1694,10 +1694,10 @@ class WSGIWorker(Worker):
             if __debug__:
                 self.err_log.debug("Finally closing output and sock_file")
 
-        if hasattr(output, "close"):
-            output.close()
+            if hasattr(output, "close"):
+                output.close()
 
-        sock_file.close()
+            sock_file.close()
 
 
 # Monolithic build...end of module: rocket/methods/wsgi.py
