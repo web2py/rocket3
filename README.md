@@ -1,6 +1,6 @@
 # Rocket3
 
-Rocket3 is the multi-threaded web server used by web2py stripped of all the Python2 logic and dependencies. It now only supports Python3 and can be used without web2py.
+Rocket3 is the multi-threaded web server used by web2py and py4web, stripped of all the Python2 logic and dependencies. It now only supports Python3 and can be used without web2py or py4web.
 
 Rocket was originally developed by Massimo Di Pierro, then rewritten much better by Timoty Ferrell, and then has minor refactorings made by Massimo and other web2py contributors.
 
