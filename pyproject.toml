@@ -1,6 +1,6 @@
 [project]
 name = "rocket3"
-version = "20241201.1"
+version = "20241225.1"
 authors = [{ name="Massimo Di Pierro", email="massimo.dipierro@gmail.com" },]
 description = "A multi-threaded WSGI compiliant and secure web server"
 readme = "README.md"
