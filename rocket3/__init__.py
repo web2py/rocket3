@@ -7,42 +7,32 @@
 
 # Import System Modules
 
-import copy
 import datetime
 import errno
-import io
 import logging
 import os
-import platform
 import queue
 import re
 import select
 import signal
 import socket
+import ssl
 import sys
 import threading
 import time
 import traceback
 import urllib.parse
 from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures.thread import _WorkItem
 from email.utils import formatdate
 from wsgiref.headers import Headers
 from wsgiref.util import FileWrapper
 
-try:
-    import ssl
-
-    has_ssl = True
-except ImportError:
-    has_ssl = False
 
 __all__ = [
     "__version__",
     "SERVER_SOFTWARE",
     "HTTP_SERVER_SOFTWARE",
     "BUF_SIZE",
-    "IS_JYTHON",
     "IGNORE_ERRORS_ON_CLOSE",
     "DEFAULTS",
     "Rocket3",
@@ -75,12 +65,7 @@ SOCKET_TIMEOUT = 10  # in secs
 THREAD_STOP_CHECK_INTERVAL = (
     1  # in secs, How often should threads check for a server stop message?
 )
-if hasattr(sys, "frozen"):
-    # py2installer
-    IS_JYTHON = False
-else:
-    IS_JYTHON = platform.system() == "Java"  # Handle special cases for Jython
-IGNORE_ERRORS_ON_CLOSE = set([errno.ECONNABORTED, errno.ECONNRESET])
+IGNORE_ERRORS_ON_CLOSE = {errno.ECONNABORTED, errno.ECONNRESET}
 DEFAULT_LISTEN_QUEUE_SIZE = 5
 DEFAULT_MIN_THREADS = 10
 DEFAULT_MAX_THREADS = 0
@@ -116,14 +101,8 @@ class Connection:
         self.server_port = port
         self.socket = sock_tuple[0]
         self.start_time = time.time()
-        self.ssl = has_ssl and isinstance(self.socket, ssl.SSLSocket)
+        self.ssl = isinstance(self.socket, ssl.SSLSocket)
         self.secure = secure
-
-        if IS_JYTHON:
-            # In Jython we must set TCP_NODELAY here since it does not
-            # inherit from the listening socket.
-            # See: http://bugs.jython.org/issue1309
-            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         self.socket.settimeout(SOCKET_TIMEOUT)
 
@@ -147,138 +126,18 @@ class Connection:
                 sent = self.socket.send(buf[offset:])
                 pending -= sent
                 offset += sent
-            except socket.error:
-                info = sys.exc_info()
-                if info[1].args[0] != errno.EAGAIN:
+            except OSError as e:
+                if e.errno != errno.EAGAIN:
                     raise
         return offset
 
-    # FIXME - this is not ready for prime-time yet.
-    #    def makefile(self, buf_size=BUF_SIZE):
-    #        return FileLikeSocket(self, buf_size)
-
     def close(self):
-        if hasattr(self.socket, "_sock"):
-            try:
-                self.socket._sock.close()
-            except socket.error:
-                info = sys.exc_info()
-                if info[1].args[0] != socket.EBADF:
-                    raise info[1]
-                else:
-                    pass
         self.socket.close()
-
-
-class FileLikeSocket:
-    def __init__(self, conn, buf_size=BUF_SIZE):
-        self.conn = conn
-        self.buf_size = buf_size
-        self.buffer = io.StringIO()
-        self.content_length = None
-
-        if self.conn.socket.gettimeout() == 0.0:
-            self.read = self.non_blocking_read
-        else:
-            self.read = self.blocking_read
-
-    def recv(self, size):
-        while True:
-            try:
-                return self.conn.recv(size)
-            except socket.error:
-                exc = sys.exc_info()
-                e = exc[1]
-                # FIXME - Don't raise socket_errors_nonblocking or socket_error_eintr
-                if e.args[0] not in set():
-                    raise
-
-    def next(self):
-        data = self.readline()
-        if data == "":
-            raise StopIteration
-        return data
-
-    def non_blocking_read(self, size=None):
-        # Shamelessly adapted from Cherrypy!
-        bufr = self.buffer
-        bufr.seek(0, 2)
-        if size is None:
-            while True:
-                data = self.recv(self.buf_size)
-                if not data:
-                    break
-                bufr.write(data)
-
-            self.buffer = io.StringIO()
-
-            return bufr.getvalue()
-        else:
-            buf_len = self.buffer.tell()
-            if buf_len >= size:
-                bufr.seek(0)
-                data = bufr.read(size)
-                self.buffer = io.StringIO(bufr.read())
-                return data
-
-            self.buffer = io.StringIO()
-            while True:
-                remaining = size - buf_len
-                data = self.recv(remaining)
-
-                if not data:
-                    break
-
-                n = len(data)
-                if n == size and not buf_len:
-                    return data
-
-                if n == remaining:
-                    bufr.write(data)
-                    del data
-                    break
-
-                bufr.write(data)
-                buf_len += n
-                del data
-
-            return bufr.getvalue()
-
-    def blocking_read(self, length=None):
-        if length is None:
-            if self.content_length is not None:
-                length = self.content_length
-            else:
-                length = 1
-
-        try:
-            data = self.conn.recv(length)
-        except Exception:
-            data = b""
-
-        return data
-
-    def readline(self):
-        data = b""
-        char = self.read(1)
-        while char not in (b"\n", b""):
-            line = repr(char)
-            data += char
-            char = self.read(1)
-        data += char
-        return data
-
-    def readlines(self, hint="ignored"):
-        return list(self)
-
-    def close(self):
-        self.conn = None
-        self.content_length = None
 
 
 class WSGIFuture(Future):
     def __init__(self, f_dict, *args, **kwargs):
-        Future.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.timeout = None
 
@@ -291,15 +150,15 @@ class WSGIFuture(Future):
         if time.time() - self._start_time >= self._lifespan:
             self.cancel()
         else:
-            return super(WSGIFuture, self).set_running_or_notify_cancel()
+            return super().set_running_or_notify_cancel()
 
     def remember(self, name, lifespan=None):
         self._lifespan = lifespan or self._lifespan
 
         if name in self._mem_dict:
             raise NameError(
-                'Cannot remember future by name "%s".  ' % name
-                + "A future already exists with that name."
+                "Cannot remember future by name %r.  "
+                "A future already exists with that name." % name
             )
         self._name = name
         self._mem_dict[name] = self
@@ -337,14 +196,13 @@ class WSGIExecutor(ThreadPoolExecutor):
     multiprocess = False
 
     def __init__(self, *args, **kwargs):
-        ThreadPoolExecutor.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
-        self.futures = dict()
+        self.futures = {}
 
     def submit(self, fn, *args, **kwargs):
-        if self._shutdown_lock.acquire():
+        with self._shutdown_lock:
             if self._shutdown:
-                self._shutdown_lock.release()
                 raise RuntimeError("Cannot schedule new futures after shutdown")
 
             f = WSGIFuture(self.futures)
@@ -352,10 +210,7 @@ class WSGIExecutor(ThreadPoolExecutor):
 
             self._work_queue.put(w)
             self._adjust_thread_count()
-            self._shutdown_lock.release()
             return f
-        else:
-            return False
 
 
 class FuturesMiddleware:
@@ -380,7 +235,7 @@ class Listener(threading.Thread):
     and queuing them to be processed by a worker thread."""
 
     def __init__(self, interface, queue_size, active_queue, *args, **kwargs):
-        threading.Thread.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         # Instance variables
         self.active_queue = active_queue
@@ -398,7 +253,7 @@ class Listener(threading.Thread):
             )
             if self.clientcert_req:
                 self.context.load_verify_locations(self.interface[4])
-                self.context.verify_model = ssl.CERT_OPTIONAL
+                self.context.verify_mode = ssl.CERT_OPTIONAL
 
         self.thread = None
         self.ready = False
@@ -418,27 +273,24 @@ class Listener(threading.Thread):
             return
 
         if self.secure:
-            if not has_ssl:
-                self.err_log.error("ssl module required to serve HTTPS.")
-                return
-            elif not os.path.exists(interface[2]):
-                data = (interface[2], interface[0], interface[1])
+            if not os.path.exists(interface[2]):
                 self.err_log.error(
-                    "Cannot find key file " "'%s'.  Cannot bind to %s:%s" % data
+                    "Cannot find key file '%s'.  Cannot bind to %s:%s",
+                    interface[2], interface[0], interface[1],
                 )
                 return
             elif not os.path.exists(interface[3]):
-                data = (interface[3], interface[0], interface[1])
                 self.err_log.error(
-                    "Cannot find certificate file " "'%s'.  Cannot bind to %s:%s" % data
+                    "Cannot find certificate file '%s'.  Cannot bind to %s:%s",
+                    interface[3], interface[0], interface[1],
                 )
                 return
 
             if self.clientcert_req and not os.path.exists(interface[4]):
-                data = (interface[4], interface[0], interface[1])
                 self.err_log.error(
                     "Cannot find root ca certificate file "
-                    "'%s'.  Cannot bind to %s:%s" % data
+                    "'%s'.  Cannot bind to %s:%s",
+                    interface[4], interface[0], interface[1],
                 )
                 return
 
@@ -446,21 +298,25 @@ class Listener(threading.Thread):
         try:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except Exception:
-            msg = "Cannot share socket.  Using %s:%i exclusively."
-            self.err_log.warning(msg % (self.addr, self.port))
+            self.err_log.warning(
+                "Cannot share socket.  Using %s:%i exclusively.",
+                self.addr, self.port,
+            )
 
         try:
-            if not IS_JYTHON:
-                listener.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            listener.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception:
-            msg = "Cannot set TCP_NODELAY, things might run a little slower"
-            self.err_log.warning(msg)
+            self.err_log.warning(
+                "Cannot set TCP_NODELAY, things might run a little slower"
+            )
 
         try:
             listener.bind((self.addr, self.port))
         except Exception:
-            msg = "Socket %s:%i in use by other process and it won't share."
-            self.err_log.error(msg % (self.addr, self.port))
+            self.err_log.error(
+                "Socket %s:%i in use by other process and it won't share.",
+                self.addr, self.port,
+            )
         else:
             # We want socket operations to timeout periodically so we can
             # check if the server is shutting down
@@ -562,7 +418,10 @@ class Rocket3:
         handle_signals=True,
     ):
         self.handle_signals = handle_signals
-        self.startstop_lock = threading.Lock()
+        # RLock so a SIGINT handler can recursively call stop() from the
+        # same thread that's already inside start()/stop().
+        self.startstop_lock = threading.RLock()
+        self._stopping = False
         self.timeout = timeout
 
         if not isinstance(interfaces, list):
@@ -616,22 +475,27 @@ class Rocket3:
         log.info("Received SIGTERM")
         self.stop()
 
+    def _sigint(self, signum, frame):
+        log.info("Received SIGINT")
+        self.stop()
+
     def _sighup(self, signum, frame):
         log.info("Received SIGHUP")
         self.restart()
 
     def start(self, background=False):
-        log.info("Starting %s" % SERVER_SOFTWARE)
+        log.info("Starting %s", SERVER_SOFTWARE)
 
-        self.startstop_lock.acquire()
-
-        try:
+        with self.startstop_lock:
             # Set up our shutdown signals
             if self.handle_signals:
                 try:
                     signal.signal(signal.SIGTERM, self._sigterm)
+                    signal.signal(signal.SIGINT, self._sigint)
                     signal.signal(signal.SIGUSR1, self._sighup)
-                except Exception:
+                except (ValueError, OSError, AttributeError):
+                    # ValueError: not in main thread.
+                    # AttributeError: SIGUSR1 missing on Windows.
                     log.debug("This platform does not support signals.")
 
             # Start our worker threads
@@ -643,76 +507,76 @@ class Rocket3:
             )
             self._monitor.start()
 
-            # I know that EXPR and A or B is bad but I'm keeping it for Py2.4
-            # compatibility.
-            str_extract = lambda l: (l.addr, l.port, "*" if l.secure else "")
-
-            msg = "Listening on sockets: "
-            msg += ", ".join(["%s:%i%s" % str_extract(l) for l in self.listeners])
+            msg = "Listening on sockets: " + ", ".join(
+                "%s:%i%s" % (listener.addr, listener.port, "*" if listener.secure else "")
+                for listener in self.listeners
+            )
             log.info(msg)
 
-            for l in self.listeners:
-                l.start()
-
-        finally:
-            self.startstop_lock.release()
+            for listener in self.listeners:
+                listener.start()
 
         if background:
             return
 
-        while self._monitor.is_alive():
-            try:
-                time.sleep(THREAD_STOP_CHECK_INTERVAL)
-            except KeyboardInterrupt:
-                # Capture a keyboard interrupt when running from a console
-                break
-            except Exception:
-                if self._monitor.is_alive():
-                    log.error(traceback.format_exc())
-                    continue
-
-        return self.stop()
+        try:
+            while self._monitor.is_alive():
+                try:
+                    time.sleep(THREAD_STOP_CHECK_INTERVAL)
+                except KeyboardInterrupt:
+                    # Reached when handle_signals is False (no SIGINT handler
+                    # installed) or the signal fires outside our handler.
+                    break
+                except Exception:
+                    if self._monitor.is_alive():
+                        log.error(traceback.format_exc())
+                        continue
+        finally:
+            self.stop()
 
     def stop(self, stoplogging=False):
-        log.info("Stopping %s" % SERVER_SOFTWARE)
+        log.info("Stopping %s", SERVER_SOFTWARE)
 
-        self.startstop_lock.acquire()
+        with self.startstop_lock:
+            # Idempotent: a second SIGINT while stop() is already running
+            # (or after it finished) is a no-op.
+            if self._stopping:
+                return
+            self._stopping = True
 
-        try:
-            # Stop listeners
-            for l in self.listeners:
-                l.ready = False
+            try:
+                # Stop listeners
+                for listener in self.listeners:
+                    listener.ready = False
 
-            # Encourage a context switch
-            time.sleep(0.01)
+                for listener in self.listeners:
+                    if listener.is_alive():
+                        listener.join()
 
-            for l in self.listeners:
-                if l.is_alive():
-                    l.join()
+                # Stop Monitor
+                if hasattr(self, "_monitor"):
+                    self._monitor.stop()
+                    if self._monitor.is_alive():
+                        self._monitor.join()
 
-            # Stop Monitor
-            self._monitor.stop()
-            if self._monitor.is_alive():
-                self._monitor.join()
+                # Stop Worker threads
+                self._threadpool.stop()
 
-            # Stop Worker threads
-            self._threadpool.stop()
-
-            if stoplogging:
-                logging.shutdown()
-                msg = "Calling logging.shutdown() is now the responsibility of \
-                       the application developer.  Please update your \
-                       applications to no longer call rocket.stop(True)"
-                try:
-                    raise DeprecationWarning(msg)
-                except ImportError:
-                    raise RuntimeError(msg)
-
-        finally:
-            self.startstop_lock.release()
+                if stoplogging:
+                    logging.shutdown()
+                    raise DeprecationWarning(
+                        "Calling logging.shutdown() is now the responsibility "
+                        "of the application developer.  Please update your "
+                        "applications to no longer call rocket.stop(True)"
+                    )
+            finally:
+                # Allow a subsequent restart().
+                pass
 
     def restart(self):
         self.stop()
+        with self.startstop_lock:
+            self._stopping = False
         self.start()
 
 
@@ -722,7 +586,7 @@ class Monitor(threading.Thread):
     def __init__(
         self, monitor_queue, active_queue, timeout, threadpool, *args, **kwargs
     ):
-        threading.Thread.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self._threadpool = threadpool
 
@@ -739,7 +603,7 @@ class Monitor(threading.Thread):
 
     def run(self):
         self.active = True
-        conn_list = list()
+        conn_list = []
         list_changed = False
 
         # We need to make sure the queue is empty before we start
@@ -769,13 +633,6 @@ class Monitor(threading.Thread):
 
                 if __debug__:
                     assert c not in self.connections
-
-                if IS_JYTHON:
-                    # Jython requires a socket to be in Non-blocking mode in
-                    # order to select on it.
-                    c.setblocking(False)
-
-                if __debug__:
                     self.log.debug("Adding connection to monitor list.")
 
                 self.connections.add(c)
@@ -787,7 +644,7 @@ class Monitor(threading.Thread):
                 list_changed = False
 
             try:
-                if len(conn_list):
+                if conn_list:
                     readable = select.select(
                         conn_list, [], [], THREAD_STOP_CHECK_INTERVAL
                     )[0]
@@ -802,12 +659,6 @@ class Monitor(threading.Thread):
                 for r in readable:
                     if __debug__:
                         self.log.debug("Restoring readable connection")
-
-                    if IS_JYTHON:
-                        # Jython requires a socket to be in Non-blocking mode in
-                        # order to select on it, but the rest of the code requires
-                        # that it be in blocking mode.
-                        r.setblocking(True)
 
                     r.start_time = time.time()
                     self.active_queue.put(r)
@@ -824,19 +675,18 @@ class Monitor(threading.Thread):
             # If we have any stale connections, kill them off.
             if self.timeout:
                 now = time.time()
-                stale = set()
-                for c in self.connections:
-                    if (now - c.start_time) >= self.timeout:
-                        stale.add(c)
+                stale = {c for c in self.connections
+                         if (now - c.start_time) >= self.timeout}
 
-                for c in copy.copy(stale):
+                for c in stale:
                     self.connections.remove(c)
                     list_changed = True
-
                     try:
                         c.close()
-                    finally:
-                        del c
+                    except Exception:
+                        self.log.debug(
+                            "Error closing stale connection", exc_info=True
+                        )
 
             # Dynamically resize the threadpool to adapt to our changing needs.
             self._threadpool.dynamic_resize()
@@ -876,8 +726,8 @@ class Monitor(threading.Thread):
 # Monolithic build...start of module: rocket/threadpool.py
 
 # Setup Logging
-log = logging.getLogger("Rocket.Errors.ThreadPool")
-log.addHandler(NullHandler())
+threadpool_log = logging.getLogger("Rocket.Errors.ThreadPool")
+threadpool_log.addHandler(NullHandler())
 
 
 class ThreadPool:
@@ -894,7 +744,7 @@ class ThreadPool:
         max_threads=DEFAULTS["MAX_THREADS"],
     ):
         if __debug__:
-            log.debug("Initializing ThreadPool.")
+            threadpool_log.debug("Initializing ThreadPool.")
 
         self.check_for_dead_threads = 0
         self.active_queue = active_queue
@@ -910,14 +760,13 @@ class ThreadPool:
         self.grow_threshold = int(max_threads / 10) + 2
 
         if not isinstance(app_info, dict):
-            app_info = dict()
+            app_info = {}
 
         if app_info.get("futures"):
-            app_info["executor"] = WSGIExecutor(max([DEFAULTS["MIN_THREADS"], 2]))
+            app_info["executor"] = WSGIExecutor(max(DEFAULTS["MIN_THREADS"], 2))
 
         app_info.update(max_threads=max_threads, min_threads=min_threads)
 
-        self.min_threads = min_threads
         self.app_info = app_info
 
         self.threads = set()
@@ -925,17 +774,17 @@ class ThreadPool:
     def start(self):
         self.stop_server = False
         if __debug__:
-            log.debug("Starting threads.")
+            threadpool_log.debug("Starting threads.")
 
         self.grow(self.min_threads)
 
         self.alive = True
 
-    def stop(self):
+    def stop(self, join_timeout=2.0):
         self.alive = False
 
         if __debug__:
-            log.debug("Stopping threads.")
+            threadpool_log.debug("Stopping threads.")
 
         self.stop_server = True
 
@@ -945,23 +794,21 @@ class ThreadPool:
         # Stop futures initially
         if self.app_info.get("futures"):
             if __debug__:
-                log.debug(
+                threadpool_log.debug(
                     "Future executor is present.  Python will not "
                     "exit until all jobs have finished."
                 )
             self.app_info["executor"].shutdown(wait=False)
 
-        # code below should be fixed but it is ok as long as
-        # the program that calls stop also ends
-        """            
-        # Wait until they pull the trigger
-        for t in self.threads:
-            if t.is_alive():
-                t.join()
+        # Wait for the workers to drain the active queue and exit.  Each worker
+        # may be mid-request (up to SOCKET_TIMEOUT), so cap the per-thread wait
+        # so a hung peer cannot block shutdown indefinitely.
+        deadline = time.time() + join_timeout
+        for t in list(self.threads):
+            remaining = max(0.0, deadline - time.time())
+            t.join(timeout=remaining)
 
-        # Clean up the mess
         self.bring_out_your_dead()
-        """
 
     def bring_out_your_dead(self):
         # Remove dead threads from the pool
@@ -969,7 +816,7 @@ class ThreadPool:
         dead_threads = [t for t in self.threads if not t.is_alive()]
         for t in dead_threads:
             if __debug__:
-                log.debug("Removing dead thread: %s." % t.name)
+                threadpool_log.debug("Removing dead thread: %s.", t.name)
             self.threads.remove(t)
         self.check_for_dead_threads -= len(dead_threads)
 
@@ -981,12 +828,12 @@ class ThreadPool:
             amount = self.max_threads
 
         if self.alive:
-            amount = min([amount, self.max_threads - len(self.threads)])
+            amount = min(amount, self.max_threads - len(self.threads))
 
         if __debug__:
-            log.debug("Growing by %i." % amount)
+            threadpool_log.debug("Growing by %i.", amount)
 
-        for x in range(amount):
+        for _ in range(amount):
             worker = self.worker_class(
                 self.app_info, self.active_queue, self.monitor_queue
             )
@@ -995,11 +842,11 @@ class ThreadPool:
 
     def shrink(self, amount=1):
         if __debug__:
-            log.debug("Shrinking by %i." % amount)
+            threadpool_log.debug("Shrinking by %i.", amount)
 
         self.check_for_dead_threads += amount
 
-        for x in range(amount):
+        for _ in range(amount):
             self.active_queue.put(None)
 
     def dynamic_resize(self):
@@ -1011,9 +858,9 @@ class ThreadPool:
             threadCount = len(self.threads)
 
             if __debug__:
-                log.debug(
-                    "Examining ThreadPool. %i threads and %i Q'd conxions"
-                    % (threadCount, queueSize)
+                threadpool_log.debug(
+                    "Examining ThreadPool. %i threads and %i Q'd conxions",
+                    threadCount, queueSize,
                 )
 
             if queueSize == 0 and threadCount > self.min_threads:
@@ -1047,17 +894,13 @@ $
     re.X,
 )
 LOG_LINE = '%(client_ip)s - "%(request_line)s" - %(status)s %(size)s'
-RESPONSE = """\
-%s %s
-Content-Length: %i
-Content-Type: %s
-
-%s
-"""
-if IS_JYTHON:
-    HTTP_METHODS = set(
-        ["OPTIONS", "GET", "HEAD", "POST", "PUT", "DELETE", "TRACE", "CONNECT"]
-    )
+RESPONSE = (
+    "%s %s\r\n"
+    "Content-Length: %i\r\n"
+    "Content-Type: %s\r\n"
+    "\r\n"
+    "%s"
+)
 
 
 class Worker(threading.Thread):
@@ -1065,7 +908,7 @@ class Worker(threading.Thread):
     and (a subclass) will run an application to process the the connection"""
 
     def __init__(self, app_info, active_queue, monitor_queue, *args, **kwargs):
-        threading.Thread.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         # Instance Variables
         self.app_info = app_info
@@ -1110,14 +953,15 @@ class Worker(threading.Thread):
             if val.args[0] in IGNORE_ERRORS_ON_CLOSE:
                 if __debug__:
                     self.err_log.debug(
-                        "Ignorable socket Error received..." "closing connection."
+                        "Ignorable socket error received... closing connection."
                     )
                 return False
             else:
                 self.status = "999 Utter Server Failure"
                 tb_fmt = traceback.format_exception(typ, val, tb)
                 self.err_log.error(
-                    "Unhandled Error when serving " "connection:\n" + "\n".join(tb_fmt)
+                    "Unhandled Error when serving connection:\n%s",
+                    "\n".join(tb_fmt),
                 )
                 return False
 
@@ -1170,20 +1014,22 @@ class Worker(threading.Thread):
                         break
                 finally:
                     if self.request_line:
-                        log_info = dict(
-                            client_ip=conn.client_addr,
-                            time=datetime.datetime.now().strftime("%c"),
-                            status=self.status.split(" ")[0],
-                            size=self.size,
-                            request_line=self.request_line,
+                        self.req_log.info(
+                            LOG_LINE,
+                            {
+                                "client_ip": conn.client_addr,
+                                "time": datetime.datetime.now().strftime("%c"),
+                                "status": self.status.split(" ")[0],
+                                "size": self.size,
+                                "request_line": self.request_line,
+                            },
                         )
-                        self.req_log.info(LOG_LINE % log_info)
 
                 if self.closeConnection:
                     try:
                         conn.close()
                     except Exception:
-                        self.err_log.error(str(traceback.format_exc()))
+                        self.err_log.error(traceback.format_exc())
                     break
 
     def run_app(self, conn):
@@ -1199,12 +1045,14 @@ class Worker(threading.Thread):
             self.conn.sendall(msg.encode("utf8"))
         except socket.timeout:
             self.closeConnection = True
-            msg = 'Tried to send "%s" to client but received timeout error'
-            self.err_log.error(msg % status)
+            self.err_log.error(
+                'Tried to send "%s" to client but received timeout error', status
+            )
         except socket.error:
             self.closeConnection = True
-            msg = 'Tried to send "%s" to client but received socket error'
-            self.err_log.error(msg % status)
+            self.err_log.error(
+                'Tried to send "%s" to client but received socket error', status
+            )
 
     def read_request_line(self, sock_file):
         self.request_line = ""
@@ -1237,14 +1085,6 @@ class Worker(threading.Thread):
 
         self.request_line = d
 
-        # NOTE: I've replaced the traditional method of procedurally breaking
-        # apart the request line with a (rather unsightly) regular expression.
-        # However, Java's regexp support sucks so bad that it actually takes
-        # longer in Jython to process the regexp than procedurally. So I've
-        # left the old code here for Jython's sake...for now.
-        if IS_JYTHON:
-            return self._read_request_line_jython(d)
-
         match = re_REQUEST_LINE.match(d)
 
         if not match:
@@ -1257,79 +1097,39 @@ class Worker(threading.Thread):
                 req[k] = ""
             if k == "path":
                 req["path"] = r"%2F".join(
-                    [urllib.parse.unquote(x) for x in re_SLASH.split(v)]
+                    urllib.parse.unquote(x) for x in re_SLASH.split(v)
                 )
 
         self.protocol = req["protocol"]
         return req
 
-    def _read_request_line_jython(self, d):
-        d = d.strip()
-        try:
-            method, uri, proto = d.split(" ")
-            if (
-                not proto.startswith("HTTP")
-                or proto[-3:] not in ("1.0", "1.1")
-                or method not in HTTP_METHODS
-            ):
-                self.send_response("400 Bad Request")
-                raise BadRequest
-        except ValueError:
-            self.send_response("400 Bad Request")
-            raise BadRequest
-
-        req = dict(method=method, protocol=proto)
-        scheme = ""
-        host = ""
-        if uri == "*" or uri.startswith("/"):
-            path = uri
-        elif "://" in uri:
-            scheme, rest = uri.split("://")
-            host, path = rest.split("/", 1)
-            path = "/" + path
-        else:
-            self.send_response("400 Bad Request")
-            raise BadRequest
-
-        query_string = ""
-        if "?" in path:
-            path, query_string = path.split("?", 1)
-
-        path = r"%2F".join([urllib.parse.unquote(x) for x in re_SLASH.split(path)])
-
-        req.update(
-            path=path, query_string=query_string, scheme=scheme.lower(), host=host
-        )
-        return req
-
     def read_headers(self, sock_file):
         try:
-            headers = dict()
+            headers = {}
             lname = None
             lval = None
             while True:
-                l = sock_file.readline()
+                line = sock_file.readline()
 
                 try:
-                    l = str(l, "ISO-8859-1")
+                    line = str(line, "ISO-8859-1")
                 except UnicodeDecodeError:
-                    self.err_log.warning("Client sent invalid header: " + repr(l))
+                    self.err_log.warning(
+                        "Client sent invalid header: %r", line
+                    )
 
-                if l.strip().replace("\0", "") == "":
+                if line.strip().replace("\0", "") == "":
                     break
 
-                if l[0] in " \t" and lname:
+                if line[0] in " \t" and lname:
                     # Some headers take more than one line
-                    lval += " " + l.strip()
+                    lval += " " + line.strip()
                 else:
-                    # HTTP header values are latin-1 encoded
-                    l = l.split(":", 1)
-                    # HTTP header names are us-ascii encoded
+                    name, _, value = line.partition(":")
+                    lname = name.strip().upper().replace("-", "_")
+                    lval = value.strip()
 
-                    lname = l[0].strip().upper().replace("-", "_")
-                    lval = l[-1].strip()
-
-                headers[str(lname)] = str(lval)
+                headers[lname] = lval
 
         except socket.timeout:
             raise SocketTimeout("Socket timed out before request.")
@@ -1432,27 +1232,25 @@ class WSGIWorker(Worker):
     def __init__(self, *args, **kwargs):
         """Builds some instance variables that will last the life of the
         thread."""
-        Worker.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         if isinstance(self.app_info, dict):
             multithreaded = self.app_info.get("max_threads") != 1
         else:
             multithreaded = False
-        self.base_environ = dict(
-            {
-                "SERVER_SOFTWARE": self.app_info["server_software"],
-                "wsgi.multithread": multithreaded,
-            }
-        )
+        self.base_environ = {
+            "SERVER_SOFTWARE": self.app_info["server_software"],
+            "wsgi.multithread": multithreaded,
+        }
         self.base_environ.update(BASE_ENV)
 
         # Grab our application
         self.app = self.app_info.get("wsgi_app")
 
-        if not hasattr(self.app, "__call__"):
+        if not callable(self.app):
             raise TypeError(
-                "The wsgi_app specified (%s) is not a valid WSGI application."
-                % repr(self.app)
+                "The wsgi_app specified (%r) is not a valid WSGI application."
+                % (self.app,)
             )
 
         # Enable futures
@@ -1501,7 +1299,9 @@ class WSGIWorker(Worker):
                     ssl.DER_cert_to_PEM_cert(peercert)
                 )
             except Exception:
-                print(sys.exc_info()[1])
+                self.err_log.debug(
+                    "Error reading SSL peer cert", exc_info=True
+                )
         else:
             environ["wsgi.url_scheme"] = "http"
 
@@ -1519,18 +1319,18 @@ class WSGIWorker(Worker):
         self.chunked = h_set.get("Transfer-Encoding", "").lower() == "chunked"
 
         # Add a Date header if it's not there already
-        if not "Date" in h_set:
+        if "Date" not in h_set:
             h_set["Date"] = formatdate(usegmt=True)
 
         # Add a Server header if it's not there already
-        if not "Server" in h_set:
+        if "Server" not in h_set:
             h_set["Server"] = HTTP_SERVER_SOFTWARE
 
         if "Content-Length" in h_set:
             self.size = int(h_set["Content-Length"])
         else:
             s = int(self.status.split(" ")[0])
-            if (s < 200 or s not in (204, 205, 304)) and not self.chunked:
+            if s >= 200 and s not in (204, 205, 304) and not self.chunked:
                 if sections == 1 or self.protocol != "HTTP/1.1":
                     # Add a Content-Length header because it's not there
                     self.size = len(data)
@@ -1541,7 +1341,7 @@ class WSGIWorker(Worker):
                     self.chunked = True
                     if __debug__:
                         self.err_log.debug(
-                            "Adding header..." "Transfer-Encoding: Chunked"
+                            "Adding header... Transfer-Encoding: Chunked"
                         )
 
         if "Connection" not in h_set:
@@ -1567,7 +1367,7 @@ class WSGIWorker(Worker):
 
         # Send the headers
         if __debug__:
-            self.err_log.debug("Sending Headers: %s" % repr(header_data))
+            self.err_log.debug("Sending Headers: %r", header_data)
         self.conn.sendall(header_data.encode("utf8"))
         self.headers_sent = True
 
@@ -1661,7 +1461,7 @@ class WSGIWorker(Worker):
             if not hasattr(output, "__iter__"):
                 self.error = (
                     "500 Internal Server Error",
-                    "WSGI applications must return a list or " "generator type.",
+                    "WSGI applications must return a list or generator type.",
                 )
                 output = self.error[0]
 
@@ -1681,12 +1481,12 @@ class WSGIWorker(Worker):
                 # If chunked, send our final chunk length
                 self.conn.sendall(b"0\r\n\r\n")
 
-        except ssl.SSLError as err:
-            if __debug__:
-                self.err_log.debug(f"SSLError: {err}")
         except ssl.SSLCertVerificationError as err:
             if __debug__:
                 self.err_log.debug(f"SSLCertVerificationError: {err}")
+        except ssl.SSLError as err:
+            if __debug__:
+                self.err_log.debug(f"SSLError: {err}")
 
         # Don't capture exceptions here.  The Worker class handles
         # them appropriately.
@@ -1701,61 +1501,73 @@ class WSGIWorker(Worker):
 
 
 # Monolithic build...end of module: rocket/methods/wsgi.py
+
+
+CONTENT_TYPES = {
+    "htm": "text/html",
+    "html": "text/html",
+    "gif": "image/gif",
+    "jpg": "image/jpeg",
+    "png": "image/png",
+    "pdf": "application/pdf",
+}
+
+
+def _safe_join(root, path_info):
+    """Join `path_info` under `root`, refusing to escape via .. segments.
+
+    Returns the absolute filesystem path on success or None if the result
+    would land outside `root`.
+    """
+    root = os.path.realpath(root)
+    rel = (path_info or "/").lstrip("/") or "index.html"
+    candidate = os.path.realpath(os.path.join(root, rel))
+    if candidate != root and not candidate.startswith(root + os.sep):
+        return None
+    return candidate
+
+
 def demo_app(environ, start_response):
-    types = {
-        "htm": "text/html",
-        "html": "text/html",
-        "gif": "image/gif",
-        "jpg": "image/jpeg",
-        "png": "image/png",
-        "pdf": "applications/pdf",
-    }
-    if os.path.exists("static"):
-        static_folder = os.path.join(os.getcwd(), "static")
-        path = os.path.join(static_folder, environ["PATH_INFO"][1:] or "index.html")
-        type = types.get(path.split(".")[-1], "text")
-        if os.path.exists(path):
+    static_folder = globals().get("static_folder") or (
+        os.path.join(os.getcwd(), "static") if os.path.isdir("static") else None
+    )
+    if static_folder and os.path.isdir(static_folder):
+        path = _safe_join(static_folder, environ.get("PATH_INFO", "/"))
+        if path is None:
+            start_response("403 FORBIDDEN", [("Content-Type", "text/plain")])
+            return [b"403 FORBIDDEN"]
+        ctype = CONTENT_TYPES.get(path.rsplit(".", 1)[-1].lower(), "text/plain")
+        if os.path.isfile(path):
             try:
-                data = open(path, "rb").read()
-                start_response("200 OK", [("Content-Type", type)])
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                start_response("200 OK", [("Content-Type", ctype)])
+                return [data]
             except IOError:
-                start_response("404 NOT FOUND", [])
-                data = "404 NOT FOUND"
-        else:
-            start_response("500 INTERNAL SERVER ERROR", [])
-            data = "500 INTERNAL SERVER ERROR"
-    else:
-        start_response("200 OK", [("Content-Type", "text/html")])
-        data = "<html><body><h1>Hello from Rocket Web Server</h1></body></html>"
-    return [data]
+                start_response("404 NOT FOUND", [("Content-Type", "text/plain")])
+                return [b"404 NOT FOUND"]
+        start_response("404 NOT FOUND", [("Content-Type", "text/plain")])
+        return [b"404 NOT FOUND"]
+
+    start_response("200 OK", [("Content-Type", "text/html")])
+    return [b"<html><body><h1>Hello from Rocket Web Server</h1></body></html>"]
 
 
 def demo():
-    from optparse import OptionParser
+    import argparse
 
-    parser = OptionParser()
-    parser.add_option(
-        "-i",
-        "--ip",
-        dest="ip",
-        default="127.0.0.1",
-        help="ip address of the network interface",
-    )
-    parser.add_option(
-        "-p", "--port", dest="port", default="8000", help="post where to run web server"
-    )
-    parser.add_option(
-        "-s",
-        "--static",
-        dest="static",
-        default=None,
-        help="folder containing static files",
-    )
-    (options, args) = parser.parse_args()
+    parser = argparse.ArgumentParser(description="Run a Rocket3 demo server.")
+    parser.add_argument("-i", "--ip", default="127.0.0.1",
+                        help="ip address of the network interface")
+    parser.add_argument("-p", "--port", default=8000, type=int,
+                        help="port to bind the web server")
+    parser.add_argument("-s", "--static", default=None,
+                        help="folder containing static files")
+    options = parser.parse_args()
     global static_folder
     static_folder = options.static
     print("Rocket running on %s:%s" % (options.ip, options.port))
-    r = Rocket3((options.ip, int(options.port)), "wsgi", {"wsgi_app": demo_app})
+    r = Rocket3((options.ip, options.port), "wsgi", {"wsgi_app": demo_app})
     r.start()
 
 

@@ -1,10 +1,10 @@
 [project]
 name = "rocket3"
-version = "20241225.1"
+version = "20260520.0"
 authors = [{ name="Massimo Di Pierro", email="massimo.dipierro@gmail.com" },]
 description = "A multi-threaded WSGI compiliant and secure web server"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: BSD License",
