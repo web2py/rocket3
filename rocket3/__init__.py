@@ -56,7 +56,7 @@ log = logging.getLogger("Rocket")
 log.addHandler(NullHandler())
 
 # Define Constants
-__version__ = "20241225.1"
+__version__ = "20260526.0"
 SERVER_NAME = socket.gethostname()
 SERVER_SOFTWARE = "Rocket3 %s" % __version__
 HTTP_SERVER_SOFTWARE = "%s Python/%s" % (SERVER_SOFTWARE, sys.version.split(" ")[0])
@@ -909,6 +909,13 @@ class Worker(threading.Thread):
 
     def __init__(self, app_info, active_queue, monitor_queue, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # Run as a daemon so a worker parked in a keep-alive read (blocked on
+        # the socket for up to SOCKET_TIMEOUT seconds) cannot keep the
+        # interpreter alive after shutdown.  ThreadPool.stop() still joins
+        # workers with a bounded timeout for a clean exit; this just guarantees
+        # the process terminates promptly on Ctrl+C even if a join times out.
+        self.daemon = True
 
         # Instance Variables
         self.app_info = app_info
