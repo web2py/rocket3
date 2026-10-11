@@ -1,8 +1,5 @@
 .PHONY: uv check format test lock build publish
 
-# Keep the virtualenv out of the (Dropbox-synced) source tree
-export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs$(CURDIR)/venv
-
 uv:
 	which uv || curl -LsSf https://astral.sh/uv/install.sh | sh
 check: uv
